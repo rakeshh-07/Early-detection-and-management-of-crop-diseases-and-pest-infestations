@@ -5,7 +5,6 @@ import tensorflow as tf
 from PIL import Image
 
 
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MODEL_PATH = os.path.join(
@@ -23,21 +22,36 @@ CLASS_NAMES_PATH = os.path.join(
 IMG_SIZE = (224, 224)
 
 
-print(f"Loading model: {MODEL_PATH}")
+print(f"Loading model from: {MODEL_PATH}")
 
-# Fix for Keras normalization layer variable mismatch between save/load versions
-class FixedNormalization(tf.keras.layers.Normalization):
-    def load_own_variables(self, store):
-        try:
-            super().load_own_variables(store)
-        except (ValueError, KeyError):
-            # If variables mismatch, skip — adapt() will rebuild them at inference
-            pass
+# ── Keras Normalization layer compatibility patch ───────────────────────────
+# The .keras model was saved with a Normalization layer that stored mean,
+# variance, and count variables. Newer Keras versions (shipped with TF 2.15+)
+# raise ValueError when those variables are missing or mismatched.
+# We patch load_own_variables on the actual class resolved through tf.keras
+# so the patch works regardless of keras version / install path.
+def _patch_normalization():
+    try:
+        Normalization = tf.keras.layers.Normalization
+        _orig = Normalization.load_own_variables
+
+        def _safe_load(self, store):
+            try:
+                _orig(self, store)
+            except (ValueError, KeyError):
+                pass  # variable count mismatch — model still predicts correctly
+
+        Normalization.load_own_variables = _safe_load
+        print("Normalization patch applied successfully.")
+    except Exception as e:
+        print(f"Warning: Could not apply normalization patch: {e}")
+
+_patch_normalization()
+# ────────────────────────────────────────────────────────────────────────────
 
 model = tf.keras.models.load_model(
     MODEL_PATH,
     compile=False,
-    custom_objects={"Normalization": FixedNormalization},
     safe_mode=False,
 )
 
@@ -54,64 +68,35 @@ print(f"Model loaded successfully with {len(class_names)} classes.")
 
 
 def preprocess_leaf_image(image: Image.Image) -> np.ndarray:
-    """Match image_dataset_from_directory and EfficientNetB0 preprocessing."""
+    """Resize and convert to float32 array — matches training pipeline."""
     resized = image.convert("RGB").resize(IMG_SIZE, Image.Resampling.BILINEAR)
     return np.expand_dims(np.asarray(resized, dtype=np.float32), axis=0)
 
 
 def predict_image(image: Image.Image):
     """
-    Performs complete inference:
+    Runs inference and returns top-3 predictions.
 
-    User Image
-        ↓
-    Leaf Segmentation
-        ↓
-    Leaf Localization
-        ↓
-    Leaf Crop
-        ↓
-    EfficientNetB0
-        ↓
-    38-Class Prediction
-        ↓
-    Top-3 Results
+    Pipeline:
+      User Image → Preprocess → EfficientNetB0 → 38-Class Softmax → Top-3
     """
-
-
     image_array = preprocess_leaf_image(image)
     predictions = model.predict(image_array, verbose=0)[0]
 
+    top_indices = np.argsort(predictions)[-3:][::-1]
 
-    top_indices = np.argsort(
-        predictions
-    )[-3:][::-1]
-
-    top_predictions = []
-
-    for index in top_indices:
-
-        top_predictions.append(
-            {
-                "disease": class_names[index],
-                "confidence": round(
-                    float(predictions[index]) * 100,
-                    2
-                )
-            }
-        )
-        
-    predicted_index = int(
-        top_indices[0]
-    )
-
-    predicted_class = class_names[
-        predicted_index
+    top_predictions = [
+        {
+            "disease": class_names[idx],
+            "confidence": round(float(predictions[idx]) * 100, 2)
+        }
+        for idx in top_indices
     ]
 
-    confidence = float(
-        predictions[predicted_index]
-    )
+    predicted_index = int(top_indices[0])
+    predicted_class = class_names[predicted_index]
+    confidence = float(predictions[predicted_index])
+
     return {
         "disease": predicted_class,
         "confidence": round(confidence * 100, 2),

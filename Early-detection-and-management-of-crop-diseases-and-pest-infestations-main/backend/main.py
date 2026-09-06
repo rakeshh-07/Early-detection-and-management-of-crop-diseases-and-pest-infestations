@@ -11,8 +11,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
+        "http://localhost:3001",
     ],
-    allow_origin_regex=r"https://.*\.netlify\.app",
+    allow_origin_regex=r"https://.*\.(netlify\.app|render\.com|vercel\.app)(.*)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -21,10 +22,10 @@ app.add_middleware(
 
 @app.get("/")
 def root():
-    return {"message": "Plant Disease Detection API"}
+    return {"message": "Plant Disease Detection API is running."}
 
 
-# Changed to a standard synchronous `def` so FastAPI offloads it to a thread pool
+# Synchronous handler — FastAPI offloads to a thread pool automatically
 @app.post("/predict")
 def predict(file: UploadFile = File(...)):
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -33,8 +34,7 @@ def predict(file: UploadFile = File(...)):
     try:
         image_bytes = file.file.read()
         image = Image.open(io.BytesIO(image_bytes))
-        image.load()  
-        
+        image.load()  # Verify it's a valid image
     except (UnidentifiedImageError, ValueError):
         raise HTTPException(status_code=400, detail="Corrupted or unsupported image format.")
     except Exception as e:
@@ -44,7 +44,6 @@ def predict(file: UploadFile = File(...)):
 
     try:
         result = predict_image(image)
-
         return {
             "success": True,
             "filename": file.filename,
