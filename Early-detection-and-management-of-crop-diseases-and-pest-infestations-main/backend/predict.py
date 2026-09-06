@@ -24,30 +24,66 @@ IMG_SIZE = (224, 224)
 
 print(f"Loading model from: {MODEL_PATH}")
 
-# ── Keras Normalization layer compatibility patch ───────────────────────────
-# The .keras model was saved with a Normalization layer that stored mean,
-# variance, and count variables. Newer Keras versions (shipped with TF 2.15+)
-# raise ValueError when those variables are missing or mismatched.
-# We patch load_own_variables on the actual class resolved through tf.keras
-# so the patch works regardless of keras version / install path.
-def _patch_normalization():
+# ── Keras cross-version weight-loading compatibility patch ─────────────────
+# Problem: The .keras model was saved with an older Keras version. When loaded
+# by a newer Keras (TF 2.15+), saving_lib._load_state() calls
+# layer.load_own_variables(store) on every layer. The base_layer implementation
+# raises ValueError if the stored variable count doesn't match what the layer
+# expects. This affects Normalization layers, EfficientNet stem/blocks, etc.
+#
+# Fix: Patch the base class (tf.keras.layers.Layer) so load_own_variables
+# silently continues on count mismatches instead of crashing.
+def _apply_keras_loading_patch():
     try:
-        Normalization = tf.keras.layers.Normalization
-        _orig = Normalization.load_own_variables
+        import keras
+        # Try to reach the actual base Layer class that holds load_own_variables
+        # Keras 2.x path (TF 2.x bundled keras)
+        base_layer_cls = None
+        try:
+            from keras.engine.base_layer import Layer as _L
+            base_layer_cls = _L
+            print("Patching keras.engine.base_layer.Layer")
+        except ImportError:
+            pass
 
-        def _safe_load(self, store):
+        if base_layer_cls is None:
             try:
-                _orig(self, store)
-            except (ValueError, KeyError):
-                pass  # variable count mismatch — model still predicts correctly
+                from keras.src.engine.base_layer import Layer as _L
+                base_layer_cls = _L
+                print("Patching keras.src.engine.base_layer.Layer")
+            except ImportError:
+                pass
 
-        Normalization.load_own_variables = _safe_load
-        print("Normalization patch applied successfully.")
+        if base_layer_cls is None:
+            # Keras 3.x path
+            try:
+                from keras.src.layers.layer import Layer as _L
+                base_layer_cls = _L
+                print("Patching keras.src.layers.layer.Layer")
+            except ImportError:
+                pass
+
+        if base_layer_cls is None:
+            print("Warning: Could not find keras Layer base class to patch.")
+            return
+
+        _orig_load_own_variables = base_layer_cls.load_own_variables
+
+        def _safe_load_own_variables(self, store):
+            try:
+                _orig_load_own_variables(self, store)
+            except (ValueError, KeyError) as e:
+                print(f"  [patch] Skipped weight mismatch for layer '{getattr(self, 'name', '?')}': {e}")
+
+        base_layer_cls.load_own_variables = _safe_load_own_variables
+        print("Keras base Layer.load_own_variables patch applied.")
+
     except Exception as e:
-        print(f"Warning: Could not apply normalization patch: {e}")
+        print(f"Warning: Failed to apply keras patch: {e}")
 
-_patch_normalization()
-# ────────────────────────────────────────────────────────────────────────────
+
+_apply_keras_loading_patch()
+# ───────────────────────────────────────────────────────────────────────────
 
 model = tf.keras.models.load_model(
     MODEL_PATH,
