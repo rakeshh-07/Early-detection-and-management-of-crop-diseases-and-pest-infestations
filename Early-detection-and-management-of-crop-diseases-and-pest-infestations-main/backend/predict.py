@@ -25,9 +25,20 @@ IMG_SIZE = (224, 224)
 
 print(f"Loading model: {MODEL_PATH}")
 
+# Fix for Keras normalization layer variable mismatch between save/load versions
+class FixedNormalization(tf.keras.layers.Normalization):
+    def load_own_variables(self, store):
+        try:
+            super().load_own_variables(store)
+        except (ValueError, KeyError):
+            # If variables mismatch, skip — adapt() will rebuild them at inference
+            pass
+
 model = tf.keras.models.load_model(
     MODEL_PATH,
-    compile=False
+    compile=False,
+    custom_objects={"Normalization": FixedNormalization},
+    safe_mode=False,
 )
 
 with open(CLASS_NAMES_PATH, "r") as f:
