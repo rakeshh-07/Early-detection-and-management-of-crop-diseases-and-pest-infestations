@@ -1,0 +1,11 @@
+[build]
+  base    = "Early-detection-and-management-of-crop-diseases-and-pest-infestations-main/frontend"
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NEXT_PUBLIC_API_URL = "https://early-detection-and-management-of-crop-tcxs.onrender.com"
+  NODE_VERSION = "20"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
